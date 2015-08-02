@@ -9,6 +9,75 @@ local nloop = 1
 local times = {}
 local mytester
 
+function cudnntest.TemporalConvolution_forward_batch()
+   local bs = 1 -- math.random(1,32)
+   local from = 3 -- math.random(1,32)
+   local to = 3 -- math.random(1,64)
+   local ki = 2 -- math.random(1,15)
+   local si = 1 -- math.random(1,ki)
+   local outi = 1 -- math.random(1,64)
+   local ini = (outi-1)*si+ki
+   local input = torch.randn(bs,ini,from):cuda()
+   local sconv = nn.TemporalConvolution(from,to,ki,si):cuda()
+   local groundtruth = sconv:forward(input)
+   cutorch.synchronize()
+   local gconv = cudnn.TemporalConvolution(from,to,ki,si):cuda()
+   gconv.weight:copy(sconv.weight)
+   gconv.bias:copy(sconv.bias)
+   local rescuda = gconv:forward(input)
+   cutorch.synchronize()
+   print(groundtruth)
+   print(rescuda)
+   local error = rescuda:float() - groundtruth:float()
+   mytester:assertlt(error:abs():max(), precision_forward, 'error on state (forward) ')
+end
+
+
+function cudnntest.TemporalConvolution_backward_batch()
+   local bs = math.random(1,32)
+   local from = math.random(1,32)
+   local to = math.random(1,64)
+   local ki = math.random(1,15)
+   local si = math.random(1,ki)
+   local outi = math.random(1,64)
+   local ini = (outi-1)*si+ki
+   local scale = math.random()
+
+   local input = torch.randn(bs,ini,from):cuda()
+   local gradOutput = torch.randn(bs,outi,to):cuda()
+   local sconv = nn.TemporalConvolutionMM(from,to,ki,si):cuda()
+   sconv:forward(input)
+   sconv:zeroGradParameters()
+   local groundgrad = sconv:backward(input, gradOutput, scale)
+   cutorch.synchronize()
+   local groundweight = sconv.gradWeight
+   local groundbias = sconv.gradBias
+
+   local gconv = cudnn.TemporalConvolution(from,to,ki,si):cuda()
+   gconv.weight:copy(sconv.weight)
+   gconv.bias:copy(sconv.bias)
+   gconv:forward(input)
+
+   -- serialize and deserialize
+   torch.save('modelTemp.t7', gconv)
+   gconv = torch.load('modelTemp.t7')
+
+   gconv:forward(input)
+   gconv:zeroGradParameters()
+   local rescuda = gconv:backward(input, gradOutput, scale)
+   cutorch.synchronize()
+   local weightcuda = gconv.gradWeight
+   local biascuda = gconv.gradBias
+
+   local error = rescuda:float() - groundgrad:float()
+   local werror = weightcuda:float() - groundweight:float()
+   local berror = biascuda:float() - groundbias:float()
+
+   mytester:assertlt(error:abs():max(), precision_backward, 'error on state (backward) ')
+   mytester:assertlt(werror:abs():max(), precision_backward, 'error on weight (backward) ')
+   mytester:assertlt(berror:abs():max(), precision_backward, 'error on bias (backward) ')
+end
+
 function cudnntest.SpatialConvolution_forward_batch()
    local bs = math.random(1,32)
    local from = math.random(1,32)
@@ -28,7 +97,13 @@ function cudnntest.SpatialConvolution_forward_batch()
    local gconv = cudnn.SpatialConvolution(from,to,ki,kj,si,sj):cuda()
    gconv.weight:copy(sconv.weight)
    gconv.bias:copy(sconv.bias)
-   local rescuda = gconv:forward(input)
+   local inc
+   if torch.random(1,2) == 1 then
+       inc = torch.randn(bs,from,ini,inj):cuda():copy(input:transpose(3,4)):transpose(3,4)
+   else
+       inc = input
+   end
+   local rescuda = gconv:forward(inc)
    cutorch.synchronize()
    local error = rescuda:float() - groundtruth:float()
    mytester:assertlt(error:abs():max(), precision_forward, 'error on state (forward) ')
@@ -589,10 +664,10 @@ math.randomseed(os.time())
 mytester = torch.Tester()
 mytester:add(cudnntest)
 
-for i=1,cutorch.getDeviceCount() do
-   print('Running test on device: ' .. i)
-   cutorch.setDevice(i)
-   mytester:run()
-end
+--for i=1,cutorch.getDeviceCount() do
+   print('Running test on device: ' .. 1)
+   cutorch.setDevice(1)
+   mytester:run('TemporalConvolution_forward_batch')
+--end
 
 os.execute('rm -f modelTemp.t7')

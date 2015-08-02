@@ -57,7 +57,8 @@ function SpatialConvolution:createIODescriptors(input)
       input = input:view(1, input:size(1), input:size(2), input:size(3))
       batch = false
    end
-   assert(input:dim() == 4 and input:isContiguous());
+   assert(input:dim() == 4);
+
    if not self.iDesc or not self.oDesc or
       input:size(1) ~= self.iSize[1] or input:size(2) ~= self.iSize[2]
    or input:size(3) ~= self.iSize[3] or input:size(4) ~= self.iSize[4] then
